@@ -1,0 +1,4 @@
+flask>=3.0
+chess>=1.10
+anthropic>=2.1
+requests>=2.31
