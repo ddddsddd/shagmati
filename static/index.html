@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Шахматы против ИИ</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">♞ <span>Шахматы против ИИ</span></div>
+    <div class="ai-status" id="aiStatus" title="Статус ИИ-сервера"><i></i><span>проверяю ИИ…</span></div>
+    <div class="top-actions">
+      <button class="btn ghost" id="callBtn" title="Режим звонка">📞 <span>Звонок</span></button>
+      <button class="btn ghost" id="settingsBtn" title="Настройки">⚙️ <span>Настройки</span></button>
+      <button class="btn primary" id="newGameBtn">Новая партия</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="board-col">
+      <div class="player-bar" id="aiBar">
+        <div class="avatar ai">ИИ</div>
+        <div class="who"><b>Нейросеть</b><small id="aiColorLabel">—</small></div>
+        <div class="captured" id="aiCaptured"></div>
+        <div class="turn-dot" id="aiTurn"></div>
+      </div>
+
+      <div class="board-wrap">
+        <div class="board" id="board" aria-label="Шахматная доска"></div>
+        <div class="board-overlay hidden" id="overlay">
+          <div class="overlay-card">
+            <div class="overlay-title" id="overlayTitle"></div>
+            <div class="overlay-sub" id="overlaySub"></div>
+            <button class="btn primary" id="overlayBtn">Начать</button>
+          </div>
+        </div>
+        <div class="promo hidden" id="promo"></div>
+      </div>
+
+      <div class="player-bar" id="meBar">
+        <div class="avatar me">Ты</div>
+        <div class="who"><b>Ты</b><small id="meColorLabel">—</small></div>
+        <div class="captured" id="meCaptured"></div>
+        <div class="turn-dot" id="meTurn"></div>
+      </div>
+    </section>
+
+    <aside class="side-col">
+      <div class="call-card hidden" id="callCard">
+        <div class="call-head">
+          <div class="call-avatar" id="callAvatar">ИИ</div>
+          <div>
+            <b>Звонок с нейросетью</b>
+            <small id="callStatus">На связи</small>
+          </div>
+          <span class="call-timer" id="callTimer">00:00</span>
+        </div>
+        <div class="call-actions">
+          <button class="mic-btn" id="micBtn" title="Нажми и говори (или зажми пробел)">
+            <span class="mic-icon">🎙️</span><span class="mic-label">Нажми, чтобы сказать</span>
+          </button>
+          <button class="btn danger" id="hangupBtn" title="Завершить звонок">Положить трубку</button>
+        </div>
+        <div class="interim hidden" id="interim"></div>
+        <small class="hint">Микрофон сам не включается. Нажми кнопку или зажми <kbd>Пробел</kbd> как рацию. Можно говорить ходы: «е2 е4», «конь на f3», «рокировка».</small>
+      </div>
+
+      <div class="status" id="status">Нажми «Новая партия»</div>
+
+      <div class="panel moves-panel">
+        <div class="panel-title">
+          Ходы
+          <button class="btn small ghost" id="resignBtn">Сдаться</button>
+        </div>
+        <div class="moves-grid" id="moves"></div>
+      </div>
+
+      <div class="panel chat-panel">
+        <div class="panel-title">Комментарии и чат</div>
+        <div class="chat" id="chat"></div>
+        <form class="chat-form" id="chatForm" autocomplete="off">
+          <input id="chatInput" type="text" placeholder="Напиши ИИ или ход (e2e4, Кf3…)" maxlength="500">
+          <button class="btn primary" type="submit">➤</button>
+        </form>
+      </div>
+    </aside>
+  </main>
+
+  <div class="modal hidden" id="settingsModal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2 id="settingsTitle">Настройки</h2>
+        <button class="btn ghost small" id="settingsClose" aria-label="Закрыть">✕</button>
+      </div>
+
+      <label class="field">
+        <span>Характер ИИ</span>
+        <select id="setPersonality">
+          <option value="friendly">Дружелюбный</option>
+          <option value="toxic">Дерзкий трэштокер</option>
+          <option value="coach">Тренер</option>
+        </select>
+      </label>
+
+      <label class="field">
+        <span>Сила игры</span>
+        <select id="setDifficulty">
+          <option value="easy">Новичок (быстро)</option>
+          <option value="normal">Любитель</option>
+          <option value="hard">Мастер (думает дольше)</option>
+        </select>
+      </label>
+
+      <label class="switch">
+        <input type="checkbox" id="setHints">
+        <span class="slider"></span>
+        <span>Подсвечивать возможные ходы</span>
+      </label>
+
+      <h3>Голос</h3>
+      <label class="switch">
+        <input type="checkbox" id="setVoice">
+        <span class="slider"></span>
+        <span>ИИ озвучивает комментарии</span>
+      </label>
+
+      <label class="switch">
+        <input type="checkbox" id="setCall">
+        <span class="slider"></span>
+        <span>Режим звонка — ИИ говорит и слушает тебя (микрофон по кнопке)</span>
+      </label>
+
+      <label class="field">
+        <span>Голос ИИ</span>
+        <select id="setVoiceName"></select>
+      </label>
+
+      <label class="field">
+        <span>Скорость речи: <b id="rateValue">1.0</b></span>
+        <input type="range" id="setRate" min="0.6" max="1.6" step="0.1">
+      </label>
+
+      <button class="btn ghost" id="testVoiceBtn">🔊 Проверить голос</button>
+      <p class="note" id="voiceSupport"></p>
+
+      <h3>Подключение</h3>
+      <label class="field">
+        <span>URL API нейросети</span>
+        <input type="url" id="setApiUrl" placeholder="https://api.anthropic.com" spellcheck="false" autocomplete="off">
+        <small class="note">Свой прокси или любой адрес, совместимый с Claude API. Пусто — адрес по умолчанию. Ключ берётся из ANTHROPIC_API_KEY на ИИ-сервере.</small>
+      </label>
+      <label class="field">
+        <span>Адрес ИИ-сервера (ai_server.py)</span>
+        <input type="url" id="setAiUrl" placeholder="http://127.0.0.1:8001" spellcheck="false" autocomplete="off">
+      </label>
+      <button class="btn ghost" id="checkApiBtn">🔌 Проверить подключение</button>
+      <p class="note" id="apiCheckResult"></p>
+    </div>
+  </div>
+
+  <div class="toast hidden" id="toast"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
