@@ -143,6 +143,19 @@
 
       <button class="btn ghost" id="testVoiceBtn">🔊 Проверить голос</button>
       <p class="note" id="voiceSupport"></p>
+
+      <h3>Подключение</h3>
+      <label class="field">
+        <span>URL API нейросети</span>
+        <input type="url" id="setApiUrl" placeholder="https://api.anthropic.com" spellcheck="false" autocomplete="off">
+        <small class="note">Свой прокси или любой адрес, совместимый с Claude API. Пусто — адрес по умолчанию. Ключ берётся из ANTHROPIC_API_KEY на ИИ-сервере.</small>
+      </label>
+      <label class="field">
+        <span>Адрес ИИ-сервера (ai_server.py)</span>
+        <input type="url" id="setAiUrl" placeholder="http://127.0.0.1:8001" spellcheck="false" autocomplete="off">
+      </label>
+      <button class="btn ghost" id="checkApiBtn">🔌 Проверить подключение</button>
+      <p class="note" id="apiCheckResult"></p>
     </div>
   </div>
 

@@ -8,6 +8,7 @@
 
 Переменные окружения:
   ANTHROPIC_API_KEY  — ключ Claude API (без него работает запасной офлайн-движок)
+  ANTHROPIC_BASE_URL — адрес API по умолчанию (свой URL/прокси можно задать и в настройках игры)
   CLAUDE_MODEL       — модель, по умолчанию claude-opus-5-5
   AI_OFFLINE=1       — принудительно играть без нейросети (простой движок)
   AI_FALLBACKS=0     — отключить серверный фолбэк на другую модель при отказе
@@ -24,6 +25,7 @@ import logging
 import math
 import os
 import random
+from collections import namedtuple
 
 import chess
 from flask import Flask, jsonify, request
@@ -46,31 +48,54 @@ logging.getLogger("werkzeug").setLevel(logging.INFO)
 app = Flask(__name__)
 app.json.ensure_ascii = False
 
-def connect():
-    """Создаёт клиента Claude и проверяет ключ. Возвращает (client, причина офлайна)."""
+
+def normalize_url(url):
+    """Пустая строка -> None (адрес по умолчанию). Без http(s):// -> ValueError."""
+    url = (url or "").strip().rstrip("/")
+    if url and not url.startswith(("http://", "https://")):
+        raise ValueError("адрес API должен начинаться с http:// или https://")
+    return url or None
+
+
+def connect(base_url):
+    """Создаёт клиента Claude для base_url и проверяет его. Возвращает (client, причина офлайна)."""
     if FORCE_OFFLINE:
         return None, "включён AI_OFFLINE=1"
     if anthropic is None:
         return None, "не установлен пакет anthropic"
+    where = base_url or "Claude API"
     try:
-        new_client = anthropic.Anthropic(timeout=180.0, max_retries=2)
-        new_client.models.retrieve(MODEL)  # бесплатная проверка ключа и модели
+        # base_url=None — адрес по умолчанию (или из ANTHROPIC_BASE_URL)
+        new_client = anthropic.Anthropic(base_url=base_url, timeout=180.0, max_retries=2)
+        # бесплатная проверка ключа; короткий таймаут, чтобы не висеть на неверном адресе
+        new_client.with_options(timeout=10.0, max_retries=0).models.retrieve(MODEL)
     except anthropic.AuthenticationError:
-        return None, "неверный ANTHROPIC_API_KEY"
-    except anthropic.NotFoundError:
-        return None, f"модель {MODEL} недоступна для этого ключа"
+        return None, f"неверный ключ API для {where}"
+    except anthropic.PermissionDeniedError:
+        return None, f"{where} отказал в доступе (403) — возможно, нужен свой URL/прокси"
     except anthropic.APIConnectionError:
-        log.warning("Не удалось проверить Claude API (нет сети?) — пробую работать дальше")
-        return new_client, None
+        return None, f"нет связи с {where}"
     except anthropic.APIStatusError as e:
-        log.warning("Проверка Claude API вернула %s — пробую работать дальше", e.status_code)
-        return new_client, None
+        # прокси могут не поддерживать /v1/models — пробуем работать дальше
+        log.warning("Проверка %s вернула %s — пробую работать дальше", where, e.status_code)
     except Exception:  # SDK не нашёл ни ключа, ни профиля
         return None, "не задан ANTHROPIC_API_KEY"
     return new_client, None
 
 
-client, offline_reason = connect()
+Api = namedtuple("Api", "client offline_reason base_url")
+_clients = {}  # base_url -> проверенный клиент
+
+
+def get_client(base_url=None):
+    """Подключение к API по base_url (пусто — адрес по умолчанию)."""
+    base_url = normalize_url(base_url)
+    if base_url in _clients:
+        return Api(_clients[base_url], None, base_url)
+    new_client, reason = connect(base_url)
+    if new_client is not None:  # неудачи не кэшируем — адрес могут поправить
+        _clients[base_url] = new_client
+    return Api(new_client, reason, base_url)
 
 
 class AIError(Exception):
@@ -112,14 +137,15 @@ COLOR_NAMES = {chess.WHITE: "белыми", chess.BLACK: "чёрными"}
 # ---------------------------------------------------------------------------
 
 def parse_payload(data):
-    """Восстанавливает доску из списка ходов (UCI) и вытаскивает настройки."""
+    """Восстанавливает доску из списка ходов (UCI), настройки и подключение к API."""
+    api = get_client(data.get("api_base_url"))
     board = chess.Board()
     for uci in data.get("moves", []):
         board.push_uci(uci)
     ai_color = chess.WHITE if data.get("ai_color") == "white" else chess.BLACK
     personality = data.get("personality") if data.get("personality") in PERSONALITIES else "friendly"
     difficulty = data.get("difficulty") if data.get("difficulty") in DIFFICULTIES else "normal"
-    return board, ai_color, personality, difficulty
+    return board, ai_color, personality, difficulty, api
 
 
 def board_ascii(board):
@@ -217,10 +243,11 @@ def system_prompt(ai_color, personality, difficulty):
 # Вызов нейросети
 # ---------------------------------------------------------------------------
 
-def ask_claude(system, prompt, effort, schema=None):
-    """Один запрос к Claude. Со schema возвращает dict, без неё — текст."""
-    if client is None:
-        raise AIError("нейросеть не подключена")
+def ask_claude(api, system, prompt, effort, schema=None):
+    """Один запрос к Claude через клиента api. Со schema возвращает dict, без неё — текст."""
+    if api.client is None:
+        raise AIError(api.offline_reason or "нейросеть не подключена")
+    client = api.client
     output_config = {"effort": effort}
     if schema is not None:
         output_config["format"] = {"type": "json_schema", "schema": schema}
@@ -410,18 +437,22 @@ def offline_comment(board_before, move, phrases):
 
 @app.get("/health")
 def health():
-    if client:
-        return jsonify(ok=True, mode="claude", model=MODEL)
-    return jsonify(ok=True, mode="offline", reason=offline_reason)
+    try:
+        api = get_client(request.args.get("base_url"))
+    except ValueError as e:
+        return jsonify(ok=True, mode="offline", reason=str(e))
+    if api.client:
+        return jsonify(ok=True, mode="claude", model=MODEL, base_url=api.base_url)
+    return jsonify(ok=True, mode="offline", reason=api.offline_reason, base_url=api.base_url)
 
 
 @app.post("/move")
 def move():
     data = request.get_json(force=True)
     try:
-        board, ai_color, personality, difficulty = parse_payload(data)
+        board, ai_color, personality, difficulty, api = parse_payload(data)
     except ValueError as e:
-        return jsonify(error=f"некорректные ходы: {e}"), 400
+        return jsonify(error=f"некорректный запрос: {e}"), 400
     if board.turn != ai_color or board.is_game_over(claim_draw=True):
         return jsonify(error="сейчас не ход ИИ"), 400
 
@@ -462,7 +493,7 @@ def move():
             "additionalProperties": False,
         }
         effort = DIFFICULTIES[difficulty][0]
-        answer = ask_claude(system_prompt(ai_color, personality, difficulty), prompt, effort, schema)
+        answer = ask_claude(api, system_prompt(ai_color, personality, difficulty), prompt, effort, schema)
         chosen = legal.get(answer.get("move"))
         if chosen is None:
             raise AIError(f"нейросеть выбрала недопустимый ход {answer.get('move')!r}")
@@ -471,7 +502,9 @@ def move():
         source = "claude"
     except AIError as e:
         log.warning("Ход офлайн-движком: %s", e)
-        note = None if client is None else f"Нейросеть не ответила ({e}), сходил запасной движок."
+        # без ключа и своего адреса молча играем движком, иначе объясняем, что сломалось
+        if api.client is not None or api.base_url:
+            note = f"Нейросеть не ответила ({e}), сходил запасной движок."
         chosen = engine_move(board, difficulty)
         comment_player = offline_comment(before_player, player_move, PHRASES_PLAYER) if player_move \
             else "Привет! Начинаем, я играю белыми."
@@ -492,9 +525,9 @@ def move():
 def chat():
     data = request.get_json(force=True)
     try:
-        board, ai_color, personality, difficulty = parse_payload(data)
+        board, ai_color, personality, difficulty, api = parse_payload(data)
     except ValueError as e:
-        return jsonify(error=f"некорректные ходы: {e}"), 400
+        return jsonify(error=f"некорректный запрос: {e}"), 400
     message = (data.get("message") or "").strip()
     if not message:
         return jsonify(error="пустое сообщение"), 400
@@ -522,7 +555,7 @@ def chat():
     schema = {"type": "object", "properties": properties, "required": required, "additionalProperties": False}
 
     try:
-        answer = ask_claude(system_prompt(ai_color, personality, difficulty), prompt, "low", schema)
+        answer = ask_claude(api, system_prompt(ai_color, personality, difficulty), prompt, "low", schema)
     except AIError as e:
         log.warning("Чат недоступен: %s", e)
         return jsonify(reply="Я сейчас без нейросети и могу только играть. Ходи кликом или скажи ход, например «е2 е4».",
@@ -541,16 +574,16 @@ def chat():
 def comment():
     data = request.get_json(force=True)
     try:
-        board, ai_color, personality, difficulty = parse_payload(data)
+        board, ai_color, personality, difficulty, api = parse_payload(data)
     except ValueError as e:
-        return jsonify(error=f"некорректные ходы: {e}"), 400
+        return jsonify(error=f"некорректный запрос: {e}"), 400
     event = data.get("event") or "партия закончилась"
     prompt = (
         position_block(board, ai_color, data.get("chat", []))
         + f"\nСобытие: {event}\nОтреагируй на это одной-двумя фразами."
     )
     try:
-        text = ask_claude(system_prompt(ai_color, personality, difficulty), prompt, "low")
+        text = ask_claude(api, system_prompt(ai_color, personality, difficulty), prompt, "low")
         return jsonify(comment=text, source="claude")
     except AIError as e:
         log.warning("Комментарий офлайн: %s", e)
@@ -558,6 +591,7 @@ def comment():
 
 
 if __name__ == "__main__":
-    mode = f"нейросеть {MODEL}" if client else f"офлайн-движок ({offline_reason})"
+    default_api = get_client(None)
+    mode = f"нейросеть {MODEL}" if default_api.client else f"офлайн-движок ({default_api.offline_reason})"
     log.info("ИИ-сервер на http://127.0.0.1:%s — режим: %s", PORT, mode)
     app.run(host="127.0.0.1", port=PORT, threaded=True)

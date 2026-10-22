@@ -26,6 +26,8 @@ const DEFAULT_SETTINGS = {
   voice: false,
   voiceURI: "",
   rate: 1.0,
+  apiUrl: "",   // свой URL API нейросети ("" — по умолчанию)
+  aiUrl: "",    // адрес ai_server.py ("" — по умолчанию)
 };
 
 let settings = loadSettings();
@@ -83,6 +85,8 @@ const prefs = () => ({
   game_id: game?.game_id,
   personality: settings.personality,
   difficulty: settings.difficulty,
+  ai_url: settings.aiUrl,
+  api_base_url: settings.apiUrl,
 });
 
 function setGame(state) {
@@ -99,14 +103,16 @@ async function checkHealth() {
   const set = (cls, text) => {
     el.className = "ai-status " + cls;
     el.querySelector("span").textContent = text;
+    return text;
   };
+  const query = new URLSearchParams({ ai_url: settings.aiUrl, api_url: settings.apiUrl });
   try {
-    const { ai } = await api("/api/health");
-    if (!ai.ok) set("down", "ИИ-сервер не запущен");
-    else if (ai.mode === "claude") set("ok", `Нейросеть: ${ai.model}`);
-    else set("offline", `Офлайн-движок: ${ai.reason || "нейросеть недоступна"}`);
+    const { ai } = await api(`/api/health?${query}`);
+    if (!ai.ok) return set("down", ai.error || "ИИ-сервер не запущен");
+    if (ai.mode === "claude") return set("ok", `Нейросеть: ${ai.model}${ai.base_url ? " · свой URL" : ""}`);
+    return set("offline", `Офлайн-движок: ${ai.reason || "нейросеть недоступна"}`);
   } catch {
-    set("down", "Игровой сервер недоступен");
+    return set("down", "Игровой сервер недоступен");
   }
 }
 
@@ -790,6 +796,9 @@ function openSettings() {
   $("setVoice").checked = settings.voice;
   $("setCall").checked = settings.call;
   $("setRate").value = settings.rate;
+  $("setApiUrl").value = settings.apiUrl;
+  $("setAiUrl").value = settings.aiUrl;
+  $("apiCheckResult").textContent = "";
   $("rateValue").textContent = Number(settings.rate).toFixed(1);
   populateVoices();
   $("voiceSupport").textContent =
@@ -820,6 +829,31 @@ $("setRate").addEventListener("input", (e) => {
   $("rateValue").textContent = settings.rate.toFixed(1);
   saveSettings();
 });
+function bindUrlSetting(inputId, key) {
+  const input = $(inputId);
+  input.addEventListener("change", () => {
+    const url = input.value.trim().replace(/\/+$/, "");
+    const valid = !url || /^https?:\/\/\S+$/.test(url);
+    input.classList.toggle("invalid", !valid);
+    if (!valid) {
+      $("apiCheckResult").textContent = "Адрес должен начинаться с http:// или https://";
+      return;
+    }
+    input.value = url;
+    settings[key] = url;
+    saveSettings();
+    checkHealth();
+  });
+}
+
+bindUrlSetting("setApiUrl", "apiUrl");
+bindUrlSetting("setAiUrl", "aiUrl");
+$("checkApiBtn").addEventListener("click", async () => {
+  const out = $("apiCheckResult");
+  out.textContent = "Проверяю…";
+  out.textContent = await checkHealth();
+});
+
 $("testVoiceBtn").addEventListener("click", () => {
   stopSpeaking();
   speak("Привет! Вот так я буду комментировать нашу партию. Конь на f3 — и тебе шах.");

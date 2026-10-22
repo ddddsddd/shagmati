@@ -302,9 +302,11 @@ kbd { background: #2f3542; border: 1px solid var(--line); border-radius: 4px; pa
 .modal-card h3 { margin: 6px 0 0; font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
 .field { display: flex; flex-direction: column; gap: 6px; }
 .field select, .field input[type=range] { width: 100%; }
-.field select {
+.field select, .field input[type=url] {
   background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px;
 }
+.field input[type=url]:focus { outline: none; border-color: var(--accent-2); }
+.field input.invalid { border-color: var(--danger); }
 .field input[type=range] { accent-color: var(--accent); }
 .note { color: var(--muted); font-size: 13px; margin: 0; }
 

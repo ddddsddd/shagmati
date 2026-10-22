@@ -23,7 +23,15 @@ STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
 app.json.ensure_ascii = False
 
-AI_DOWN = "ИИ-сервер недоступен. Запусти его в отдельном окне: python ai_server.py"
+
+def ai_down(url):
+    return f"ИИ-сервер {url} недоступен. Запусти его в отдельном окне: python ai_server.py"
+
+
+def ai_server_url(value):
+    """Адрес ИИ-сервера из настроек; пустой или кривой — адрес по умолчанию."""
+    url = (value or "").strip().rstrip("/")
+    return url if url.startswith(("http://", "https://")) else AI_URL
 
 
 class Game:
@@ -37,6 +45,8 @@ class Game:
         self.resigned = False
         self.ai_busy = False
         self.final_commented = False
+        self.ai_url = AI_URL           # адрес ИИ-сервера (можно сменить в настройках)
+        self.api_base_url = ""         # свой URL API нейросети ("" — по умолчанию)
         self.lock = threading.RLock()
 
     @property
@@ -116,15 +126,22 @@ def _state(game):
     }
 
 
-def get_game(data):
-    game = GAMES.get((data or {}).get("game_id"))
-    if game is None:
-        return None
+def apply_settings(game, data):
     # настройки можно менять прямо во время партии
     if data.get("personality"):
         game.personality = data["personality"]
     if data.get("difficulty"):
         game.difficulty = data["difficulty"]
+    if "ai_url" in data:
+        game.ai_url = ai_server_url(data["ai_url"])
+    if "api_base_url" in data:
+        game.api_base_url = (data["api_base_url"] or "").strip()
+
+
+def get_game(data):
+    game = GAMES.get((data or {}).get("game_id"))
+    if game is not None:
+        apply_settings(game, data)
     return game
 
 
@@ -135,16 +152,17 @@ def ai_payload(game, **extra):
         "personality": game.personality,
         "difficulty": game.difficulty,
         "chat": game.chat[-12:],
+        "api_base_url": game.api_base_url,
     }
     payload.update(extra)
     return payload
 
 
-def call_ai(path, payload, timeout=300):
+def call_ai(game, path, payload, timeout=300):
     try:
-        response = requests.post(f"{AI_URL}{path}", json=payload, timeout=timeout)
+        response = requests.post(f"{game.ai_url}{path}", json=payload, timeout=timeout)
     except requests.RequestException:
-        raise ConnectionError(AI_DOWN)
+        raise ConnectionError(ai_down(game.ai_url))
     try:
         data = response.json()
     except ValueError:
@@ -208,11 +226,12 @@ def index():
 
 @app.get("/api/health")
 def health():
+    ai_url = ai_server_url(request.args.get("ai_url"))
     try:
-        ai = requests.get(f"{AI_URL}/health", timeout=3).json()
+        ai = requests.get(f"{ai_url}/health", params={"base_url": request.args.get("api_url", "")}, timeout=15).json()
     except (requests.RequestException, ValueError):
-        ai = {"ok": False, "error": AI_DOWN}
-    return jsonify(ok=True, ai=ai)
+        ai = {"ok": False, "error": ai_down(ai_url)}
+    return jsonify(ok=True, ai=ai, ai_url=ai_url)
 
 
 @app.post("/api/new")
@@ -220,6 +239,7 @@ def new_game():
     data = request.get_json(force=True) or {}
     player_color = random.choice([chess.WHITE, chess.BLACK])  # жребий!
     game = Game(player_color, data.get("personality", "friendly"), data.get("difficulty", "normal"))
+    apply_settings(game, data)
     GAMES[game.id] = game
     while len(GAMES) > 50:  # старые партии выкидываем
         GAMES.pop(next(iter(GAMES)))
@@ -278,7 +298,7 @@ def ai_move():
         ply = len(game.board.move_stack)
         payload = ai_payload(game)
     try:
-        answer = call_ai("/move", payload)
+        answer = call_ai(game, "/move", payload)
     except ConnectionError as e:
         game.ai_busy = False
         return jsonify(error=str(e), state=state(game)), 502
@@ -325,7 +345,7 @@ def say():
     payload = ai_payload(game, message=text)
     add_chat(game, "user", text)
     try:
-        answer = call_ai("/chat", payload, timeout=120)
+        answer = call_ai(game, "/chat", payload, timeout=120)
     except ConnectionError as e:
         return jsonify(error=str(e), state=state(game)), 502
 
@@ -369,7 +389,7 @@ def final_comment():
     else:
         event, fallback = f"партия закончилась: {result_text}", f"{result_text}. Хорошо сыграли!"
     try:
-        answer = call_ai("/comment", ai_payload(game, event=event, fallback=fallback), timeout=120)
+        answer = call_ai(game, "/comment", ai_payload(game, event=event, fallback=fallback), timeout=120)
     except ConnectionError as e:
         return jsonify(error=str(e), state=state(game)), 502
     add_chat(game, "ai", answer.get("comment"))
